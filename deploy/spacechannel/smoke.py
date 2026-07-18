@@ -69,8 +69,13 @@ async def positive_flow(url: str, secret: str) -> None:
                 elif obj["type"] == "error":
                     raise AssertionError(f"engine error: {obj}")
             assert done and deltas, f"no completed reply (deltas={len(deltas)})"
-            print(f"[smoke] reply ok — ttft={ttft:.2f}s len={len(''.join(deltas))} chars")
-            print(f"[smoke] reply: {''.join(deltas)[:160]}")
+            reply = "".join(deltas)
+            assert "couldn't reach the agent" not in reply.lower(), (
+                "engine fell back to its error reply — check ANTHROPIC_API_KEY / agent API"
+            )
+            ttft_s = f"{ttft:.2f}s" if ttft is not None else "n/a (non-stream)"
+            print(f"[smoke] reply ok — ttft={ttft_s} len={len(reply)} chars")
+            print(f"[smoke] reply: {reply[:160]}")
 
 
 async def negative_no_token(url: str) -> None:
