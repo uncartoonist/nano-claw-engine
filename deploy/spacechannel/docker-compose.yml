@@ -1,0 +1,41 @@
+# [sc] Space Channel Mission Control engine — dev host composition.
+# engine runs with host networking (WebRTC requires it; the host's ephemeral
+# UDP range is narrowed via sysctl to match the security group).
+services:
+  engine:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    network_mode: host
+    env_file: /opt/mission-control/.env
+    restart: unless-stopped
+    volumes:
+      - models:/app/voice/models
+      - memory:/root/.nano-claw/memory
+      - /opt/mission-control/data:/app/sites:ro
+      - ./config.json:/root/.nano-claw/config.json:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: "5"
+
+  stt:
+    build:
+      context: ../..
+      dockerfile: deploy/spacechannel/stt.Dockerfile
+    ports:
+      - "127.0.0.1:8200:8200"
+    restart: unless-stopped
+    volumes:
+      - whisper-models:/root/.cache/huggingface
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "3"
+
+volumes:
+  models:
+  memory:
+  whisper-models:

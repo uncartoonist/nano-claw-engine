@@ -1,0 +1,11 @@
+# [sc] Only the WebSocket endpoint and a health probe are reachable from the
+# internet — the engine's web UI, preview, voices, models, and metrics routes
+# simply don't exist publicly.
+dev-mc.spacechannel.com {
+	@ws path /ws
+	reverse_proxy @ws 127.0.0.1:8080
+
+	respond /healthz 200
+
+	respond 404
+}
