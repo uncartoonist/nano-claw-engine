@@ -1,0 +1,26 @@
+{
+  "comment": "Canonical Mission Control contract vectors. Engine (python) tests MUST produce/accept these exact values. Never change without a two-sided update.",
+  "secret": "contract-test-secret-0000000000000000",
+  "token": {
+    "payload": {
+      "v": 1,
+      "sub": "user_fixture_1",
+      "cid": "3f2c8a90-1111-4222-8333-444455556666",
+      "ent": {
+        "voice": false
+      },
+      "env": "dev",
+      "iat": 1784500000,
+      "exp": 1784500090,
+      "jti": "a1b2c3d4-0000-4000-8000-000000000001"
+    },
+    "encodedPayload": "eyJ2IjoxLCJzdWIiOiJ1c2VyX2ZpeHR1cmVfMSIsImNpZCI6IjNmMmM4YTkwLTExMTEtNDIyMi04MzMzLTQ0NDQ1NTU1NjY2NiIsImVudCI6eyJ2b2ljZSI6ZmFsc2V9LCJlbnYiOiJkZXYiLCJpYXQiOjE3ODQ1MDAwMDAsImV4cCI6MTc4NDUwMDA5MCwianRpIjoiYTFiMmMzZDQtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIn0",
+    "signature": "KfUphnAC4rM4AnNbMxki9qT2dlClxQOb_hgVwrfxzuA",
+    "token": "eyJ2IjoxLCJzdWIiOiJ1c2VyX2ZpeHR1cmVfMSIsImNpZCI6IjNmMmM4YTkwLTExMTEtNDIyMi04MzMzLTQ0NDQ1NTU1NjY2NiIsImVudCI6eyJ2b2ljZSI6ZmFsc2V9LCJlbnYiOiJkZXYiLCJpYXQiOjE3ODQ1MDAwMDAsImV4cCI6MTc4NDUwMDA5MCwianRpIjoiYTFiMmMzZDQtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIn0.KfUphnAC4rM4AnNbMxki9qT2dlClxQOb_hgVwrfxzuA"
+  },
+  "ingest": {
+    "timestamp": 1784500042,
+    "rawBody": "{\"conversationId\":\"3f2c8a90-1111-4222-8333-444455556666\",\"turnId\":\"turn-fixture-0001\",\"userMessage\":{\"content\":\"What changed in space today?\",\"contentType\":\"text\",\"startedAt\":\"2026-07-20T12:00:00.000Z\"},\"assistantMessage\":{\"content\":\"Here is what Space Channel is tracking today.\",\"contentType\":\"text\",\"status\":\"completed\",\"model\":\"anthropic/claude-haiku-4-5\",\"provider\":\"anthropic\"},\"usage\":{\"inputTokens\":1200,\"outputTokens\":180,\"estimatedCostUsd\":0.0021,\"sttMs\":null,\"llmTtftMs\":640,\"llmTotalMs\":2100,\"ttsMs\":null,\"e2eMs\":2400},\"knowledgeVersion\":\"20260720T020000Z-abc123def456\",\"completedAt\":\"2026-07-20T12:00:05.000Z\"}",
+    "signature": "79723a62ba768549ea88a053a4677ae5d14d84e73696514f8226c776396c967d"
+  }
+}
