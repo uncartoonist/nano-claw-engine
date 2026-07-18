@@ -23,6 +23,7 @@ from voice.wav import pcm_to_wav
 from voice import kokoro_client
 from voice import lux_client
 from voice.backoff import Backoff
+from voice.mission_control import token as mc_token
 
 if TYPE_CHECKING:
     from voice.webrtc import Session
@@ -69,12 +70,43 @@ async def static_handler(request: web.Request) -> web.FileResponse:
     return web.FileResponse(path, headers=_NO_CACHE)
 
 
+def _init_session_state(session: "Session", session_id: str, conversation_id: str | None) -> None:
+    """[sc] Shared per-session init for both text-mode and WebRTC sessions."""
+    session._backoff = Backoff()
+    session._resume_task = None
+    session._scheduler_flow_enabled = get_flow_mode() == "scheduler"
+    session._scheduler_flow_attempted = False
+    session._scheduler_flow = None
+    session._mc_session_id = session_id
+    session._mc_conversation_id = conversation_id
+
+
 async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
+    # [sc] Origin allowlist — enforced before the upgrade completes.
+    allowed_origins = os.environ.get("MISSION_CONTROL_ALLOWED_ORIGINS", "")
+    if allowed_origins:
+        origin = request.headers.get("Origin", "")
+        if origin not in [o.strip() for o in allowed_origins.split(",") if o.strip()]:
+            raise web.HTTPForbidden(text="origin not allowed")
+
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     log.info("WebSocket connected")
 
     session: Session | None = None
+    # [sc] Connection auth state. When MISSION_CONTROL_TOKEN_SECRET is unset,
+    # auth is off and behavior matches upstream exactly.
+    auth_state = {"authed": not mc_token.enabled(), "voice_allowed": True}
+    mc_session_id: str = SESSION_ID
+    mc_conversation_id: str | None = None
+
+    if mc_token.enabled():
+        async def _auth_deadline() -> None:
+            await asyncio.sleep(5)
+            if not auth_state["authed"] and not ws.closed:
+                await ws.close(code=4408, message=b"auth timeout")
+
+        asyncio.ensure_future(_auth_deadline())
     # The browser pushes its persisted set_voice/set_model/set_stt right after
     # `hello`, but the session is only created when `webrtc_offer` arrives
     # (after mic permission). Buffer early settings and apply them at session
@@ -110,19 +142,50 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
 
             msg_type = msg.get("type", "")
 
+            # [sc] Nothing but `hello` is processed until the connection is
+            # authenticated (no-op when auth is disabled).
+            if not auth_state["authed"] and msg_type != "hello":
+                continue
+
             if msg_type == "hello":
+                if mc_token.enabled():
+                    try:
+                        claims = mc_token.verify(msg.get("token", ""))
+                    except mc_token.TokenError as err:
+                        log.info("MC auth rejected: %s", err.reason)
+                        await ws.close(code=4401, message=b"unauthorized")
+                        break
+                    auth_state["authed"] = True
+                    auth_state["voice_allowed"] = bool(
+                        (claims.get("ent") or {}).get("voice", False)
+                    )
+                    mc_conversation_id = claims["cid"]
+                    mc_session_id = f"mc-{mc_conversation_id}"
+                    log.info("MC session authenticated (conversation %s)", mc_conversation_id)
+                    # Text-only mode: create the session eagerly (upstream only
+                    # creates one on webrtc_offer) with synthesis disabled.
+                    if msg.get("mode") == "text" and session is None:
+                        from voice.webrtc import Session
+
+                        session = Session()
+                        _init_session_state(session, mc_session_id, mc_conversation_id)
+                        session.audio_enabled = False
                 await ws.send_json({"type": "hello_ack", "bargeIn": BARGE_IN_ENABLED})
 
             elif msg_type == "webrtc_offer":
+                # [sc] Voice requires the voice entitlement when auth is on.
+                if mc_token.enabled() and not auth_state["voice_allowed"]:
+                    await ws.send_json({
+                        "type": "voice_notice",
+                        "text": "Voice is not enabled for this session.",
+                    })
+                    continue
                 # aiortc is only needed once a browser actually starts WebRTC.
                 from voice.webrtc import Session
 
                 session = Session()
-                session._backoff = Backoff()          # per-session backoff
-                session._resume_task = None            # pending false-alarm resume timer
-                session._scheduler_flow_enabled = get_flow_mode() == "scheduler"
-                session._scheduler_flow_attempted = False
-                session._scheduler_flow = None
+                _init_session_state(session, mc_session_id, mc_conversation_id)
+                session.audio_enabled = True
                 # Apply any settings the browser pushed before the session existed.
                 if "voice" in pending_settings:
                     v = pending_settings["voice"]
@@ -293,7 +356,11 @@ async def _handle_agent_request(
         async with client.stream(
             "POST",
             f"{NANO_CLAW_URL}/api/chat",
-            json={"message": text, "sessionId": SESSION_ID, **({"model": session.model} if session.model else {})},
+            json={
+                "message": text,
+                "sessionId": getattr(session, "_mc_session_id", SESSION_ID),  # [sc]
+                **({"model": session.model} if session.model else {}),
+            },
             headers={"Accept": "text/event-stream"},
         ) as resp:
             ctype = resp.headers.get("content-type", "")
@@ -433,6 +500,8 @@ async def _consume_sse(
         nonlocal total_bytes, first_audio
         said_parts.append(chunk)
         await ws.send_json({"type": "agent_reply_delta", "text": chunk})
+        if not getattr(session, "audio_enabled", True):
+            return  # [sc] text-only session — no synthesis
         queued_bytes = await loop.run_in_executor(
             None, session.enqueue_chunk, chunk, session.voice_id, session.speed
         )
@@ -570,7 +639,8 @@ def _write_turn_metrics(session, req_start, first_delta, first_audio, said_parts
         provider = model.split("/")[0] if "/" in model else None
         rec = {
             "ts": datetime.now().isoformat(timespec="seconds"),
-            "session_id": SESSION_ID, "provider": provider, "model": model,
+            "session_id": getattr(session, "_mc_session_id", SESSION_ID),  # [sc]
+            "provider": provider, "model": model,
             "model_version": debug.get("model"),
             "stt_size": turn.get("stt_size"), "voice_id": turn.get("voice_id"),
             "asked_text": turn.get("asked"), "said_text": " ".join(said_parts).strip() or None,
@@ -602,7 +672,7 @@ async def _handle_tool_decision(
         async with client.stream(
             "POST",
             endpoint,
-            json={"requestId": request_id, "sessionId": SESSION_ID},
+            json={"requestId": request_id, "sessionId": getattr(session, "_mc_session_id", SESSION_ID)},  # [sc]
             headers={"Accept": "text/event-stream"},
         ) as resp:
             ctype = resp.headers.get("content-type", "")
@@ -626,6 +696,8 @@ async def _speak_with_events(
     """Keep browser VAD muted until synthesized audio actually finishes."""
     await ws.send_json({"type": "agent_audio_start"})
     try:
+        if not getattr(session, "audio_enabled", True):
+            return None  # [sc] text-only session — no synthesis
         return await session.speak_text(text, session.voice_id, session.speed)
     finally:
         if not ws.closed:
