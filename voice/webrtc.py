@@ -11,7 +11,7 @@ import time
 
 import httpx
 import numpy as np
-from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 
 from voice.types import AudioChunk
 from voice.audio.audio_queue import AudioQueue
@@ -39,7 +39,12 @@ class Session:
     """Manages one WebRTC peer connection and its audio track."""
 
     def __init__(self):
-        self._pc = RTCPeerConnection(configuration=RTCConfiguration())
+        # [sc] Env-configurable ICE servers (comma-separated URLs). Required
+        # for off-LAN use: with no STUN the server only offers host candidates
+        # and internet peers can never reach it. Empty env = upstream behavior.
+        ice_env = os.environ.get("NANO_CLAW_ICE_SERVERS", "")
+        ice_servers = [RTCIceServer(urls=u.strip()) for u in ice_env.split(",") if u.strip()]
+        self._pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=ice_servers))
         self._audio_source = WebRTCAudioSource()
 
         self._audio_queue = AudioQueue()
