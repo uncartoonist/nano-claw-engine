@@ -1,11 +1,17 @@
 # [sc] Only the WebSocket endpoint and a health probe are reachable from the
 # internet — the engine's web UI, preview, voices, models, and metrics routes
-# simply don't exist publicly.
+# simply don't exist publicly. handle blocks are mutually exclusive (a bare
+# `respond 404` would otherwise outrank reverse_proxy in directive order).
 dev-mc.spacechannel.com {
-	@ws path /ws
-	reverse_proxy @ws 127.0.0.1:8080
+	handle /healthz {
+		respond 200
+	}
 
-	respond /healthz 200
+	handle /ws {
+		reverse_proxy 127.0.0.1:8080
+	}
 
-	respond 404
+	handle {
+		respond 404
+	}
 }
