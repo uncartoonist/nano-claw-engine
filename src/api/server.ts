@@ -23,6 +23,7 @@ import { Config } from '../config/schema';
 import { getConfig, createDefaultConfig, mergeEnvConfig } from '../config/index';
 import { logger } from '../utils/logger';
 import { modelsWithAvailability, DEFAULT_MODEL } from '../agent/models';
+import { isLocked, apiHost, corsOrigin } from '../mission_control'; // [sc]
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -357,7 +358,7 @@ function getMemory(sessionId: string): Memory {
 // ── HTTP helpers ─────────────────────────────────────────────
 
 function setCorsHeaders(res: http.ServerResponse): void {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin', corsOrigin()); // [sc] env-configurable
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
@@ -457,7 +458,8 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse): 
 
   memory.addMessage({ role: 'user', content: body.message });
 
-  const agentConfig = getAgentConfig(body.model);
+  // [sc] Locked mode: model selection is server policy, never client input.
+  const agentConfig = getAgentConfig(isLocked() ? undefined : body.model);
   if (wantsStream(req)) {
     await streamLoopToSSE(res, stepLoopStream(memory, agentConfig, 0));
     return;
@@ -606,9 +608,13 @@ export function createServer(): http.Server {
 export async function startServer(port: number): Promise<void> {
   const server = createServer();
 
+  // [sc] Optional bind host (NANO_CLAW_API_HOST=127.0.0.1 in the public
+  // deployment so only the co-located voice server can reach the API).
+  const host = apiHost();
   await new Promise<void>((resolve) => {
-    server.listen(port, () => resolve());
+    if (host) server.listen(port, host, () => resolve());
+    else server.listen(port, () => resolve());
   });
 
-  logger.info({ port }, 'nano-claw API server listening');
+  logger.info({ port, host: host ?? '0.0.0.0' }, 'nano-claw API server listening');
 }

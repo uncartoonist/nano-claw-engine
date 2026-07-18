@@ -49,6 +49,15 @@ NANO_CLAW_URL = os.environ.get("NANO_CLAW_URL", "http://localhost:3001")
 SESSION_ID = "voice-default"
 STATIC_DIR = Path(__file__).resolve().parent / "web"
 BARGE_IN_ENABLED = os.environ.get("NANO_CLAW_BARGE_IN", "0") not in ("0", "false", "")
+# [sc] Locked mode for the public Space Channel deployment: clients cannot
+# change models, pick large STT sizes, drive tool approvals, or hit
+# state-mutating/transcript-leaking admin routes.
+LOCKED = os.environ.get("NANO_CLAW_LOCKED", "0") not in ("0", "false", "")
+STT_ALLOWED = tuple(
+    s.strip()
+    for s in os.environ.get("NANO_CLAW_STT_ALLOWED", "tiny,base,small,medium").split(",")
+    if s.strip()
+)
 METRICS = metrics_db.init_db()
 
 
@@ -234,6 +243,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 _spawn_agent(_handle_agent_request(ws, session, http_client, text), turn_state)
 
             elif msg_type == "set_model":
+                if LOCKED:
+                    continue  # [sc] model policy is server-owned in locked mode
                 model_id = msg.get("modelId", "") or ""
                 if session:
                     session.model = model_id
@@ -244,6 +255,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
             elif msg_type == "set_stt":
                 size = msg.get("size", "base")
                 size = size if size in ("tiny", "base", "small", "medium") else "base"
+                if size not in STT_ALLOWED:  # [sc] clamp to the allowed set
+                    size = STT_ALLOWED[0] if STT_ALLOWED else "base"
                 if session:
                     session.stt_size = size
                     log.info("STT size set: %s", session.stt_size)
@@ -275,12 +288,16 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                         })
 
             elif msg_type == "tool_approve":
+                if LOCKED:
+                    continue  # [sc] no tool flow in the public deployment
                 request_id = msg.get("requestId", "")
                 if not request_id or not session:
                     continue
                 _spawn_agent(_handle_tool_decision(ws, session, http_client, "approve", request_id))
 
             elif msg_type == "tool_reject":
+                if LOCKED:
+                    continue  # [sc]
                 request_id = msg.get("requestId", "")
                 if not request_id or not session:
                     continue
@@ -767,6 +784,8 @@ async def models_handler(request: web.Request) -> web.Response:
 
 
 async def metrics_handler(request: web.Request) -> web.Response:
+    if LOCKED:
+        return web.Response(status=403, text="locked")  # [sc] leaks transcripts
     if METRICS is None:
         return web.json_response({"recent": [], "byModel": []})
     return web.json_response({
@@ -792,6 +811,8 @@ async def flow_get_handler(request: web.Request) -> web.Response:
 async def flow_set_handler(request: web.Request) -> web.Response:
     """Set the flow used for new browser sessions and phone calls."""
 
+    if LOCKED:
+        return web.Response(status=403, text="locked")  # [sc] mutates global state
     try:
         body = await request.json()
     except (json.JSONDecodeError, TypeError):
