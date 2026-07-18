@@ -12,7 +12,8 @@ services:
     volumes:
       - models:/app/voice/models
       - memory:/root/.nano-claw/memory
-      - /opt/mission-control/data:/app/sites:ro
+      # crawl_site.py/build_knowledge.py write to <repo>/data/<site> (fixed path)
+      - /opt/mission-control/engine/data:/app/sites:ro
       - ./config.json:/root/.nano-claw/config.json:ro
     logging:
       driver: json-file
