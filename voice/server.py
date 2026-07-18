@@ -24,6 +24,8 @@ from voice import kokoro_client
 from voice import lux_client
 from voice.backoff import Backoff
 from voice.mission_control import token as mc_token
+from voice.mission_control import ingest as mc_ingest
+import uuid
 
 if TYPE_CHECKING:
     from voice.webrtc import Session
@@ -224,7 +226,11 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                     continue
                 turn_state = {"t0": t0, "asked": text, "stt_ms": stt_ms,
                               "stt_size": session.stt_size, "voice_id": session.voice_id,
-                              "model": session.model}
+                              "model": session.model,
+                              # [sc] stable turn identity for idempotent persistence
+                              "turn_id": str(uuid.uuid4()),
+                              "content_type": "transcription",
+                              "started_at_iso": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}
                 await ws.send_json({"type": "transcription", "text": text})
                 _spawn_agent(_handle_agent_request(ws, session, http_client, text), turn_state)
 
@@ -239,7 +245,11 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 await ws.send_json({"type": "transcription", "text": text})
                 turn_state = {"t0": time.monotonic(), "asked": text, "stt_ms": None,
                               "stt_size": session.stt_size, "voice_id": session.voice_id,
-                              "model": session.model}
+                              "model": session.model,
+                              # [sc] stable turn identity for idempotent persistence
+                              "turn_id": str(uuid.uuid4()),
+                              "content_type": "text",
+                              "started_at_iso": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}
                 _spawn_agent(_handle_agent_request(ws, session, http_client, text), turn_state)
 
             elif msg_type == "set_model":
@@ -559,7 +569,8 @@ async def _consume_sse(
                     debug = obj.get("debug") or {}
                     if debug:
                         await ws.send_json({"type": "debug", **debug})
-                    _write_turn_metrics(session, req_start, first_delta, first_audio, said_parts, debug)
+                    rec = _write_turn_metrics(session, req_start, first_delta, first_audio, said_parts, debug)
+                    _spawn_ingest(session, rec, "completed")  # [sc]
                     await ws.send_json({"type": "agent_reply_done"})
                 elif ev == "error":
                     await ws.send_json({"type": "agent_reply", "text": f"Error: {obj.get('error', 'agent error')}"})
@@ -573,6 +584,14 @@ async def _consume_sse(
         session._backoff.reset()   # clean drain — clear consecutive-false count
         if not ws.closed:
             await ws.send_json({"type": "agent_audio_end"})
+    except asyncio.CancelledError:
+        # [sc] Interrupted turn (barge-in commit or WS teardown): persist what
+        # was actually streamed, honestly marked. No ws sends here — the
+        # cancel paths handle their own signalling.
+        rec = _write_turn_metrics(session, req_start, first_delta, first_audio, said_parts, {})
+        _spawn_ingest(session, rec, "interrupted")
+        session.stop_speaking()
+        raise
     except Exception:
         session.stop_speaking()
         if not ws.closed:
@@ -671,8 +690,35 @@ def _write_turn_metrics(session, req_start, first_delta, first_audio, said_parts
         }
         metrics_db.record_turn(METRICS, rec)
         turn.pop("_metrics", None)
+        return rec  # [sc] consumed by the Space Channel ingest webhook
     except Exception:
         log.exception("metrics: failed to assemble turn record")
+        return None
+
+
+def _spawn_ingest(session, rec, status: str) -> None:
+    """[sc] Fire-and-forget turn delivery to Space Channel; never raises."""
+    try:
+        if rec is None or not mc_ingest.enabled():
+            return
+        conversation_id = getattr(session, "_mc_conversation_id", None)
+        turn = getattr(session, "_turn", {}) or {}
+        if not conversation_id or not turn.get("turn_id"):
+            return
+        payload = mc_ingest.build_turn_payload(
+            conversation_id=conversation_id,
+            turn_id=turn["turn_id"],
+            asked_text=rec.get("asked_text") or "",
+            said_text=rec.get("said_text") or "",
+            content_type=turn.get("content_type", "text"),
+            status=status,
+            rec=rec,
+            started_at_iso=turn.get("started_at_iso", ""),
+            audio=bool(getattr(session, "audio_enabled", True)),
+        )
+        asyncio.ensure_future(mc_ingest.post_turn(payload))
+    except Exception:
+        log.exception("ingest spawn failed")
 
 
 async def _handle_tool_decision(
@@ -752,7 +798,8 @@ async def _process_api_response(
             first_audio = await _speak_with_events(ws, session, reply)
         else:
             await ws.send_json({"type": "agent_audio_end"})
-        _write_turn_metrics(session, req_start, None, first_audio, [reply] if reply else [], debug or {})
+        rec = _write_turn_metrics(session, req_start, None, first_audio, [reply] if reply else [], debug or {})
+        _spawn_ingest(session, rec, "completed")  # [sc]
     elif data.get("type") == "tool_pending":
         _stash_turn_metrics(session, req_start, None, None, [], debug or {})
         await ws.send_json({
