@@ -1,0 +1,14 @@
+# [sc] Oneshot knowledge refresh — crawl www.spacechannel.com + feeds, rebuild
+# the digest, stamp knowledge-version.json. Triggered by the matching .timer;
+# run once by hand with: systemctl start mc-knowledge-refresh.service
+[Unit]
+Description=Mission Control knowledge refresh (crawl + digest rebuild)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/mission-control/engine/deploy/spacechannel/refresh-knowledge.sh
+Nice=10
+# Crawl is rate-limited (~0.7s/page) — allow a slow full pass, then kill.
+TimeoutStartSec=30min

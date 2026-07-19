@@ -93,10 +93,38 @@ NANO_CLAW_STT_ALLOWED=tiny,base
 cd /opt/mission-control/engine && git pull && cd deploy/spacechannel && docker compose build && docker compose up -d
 ```
 
+## Knowledge refresh timer (3d)
+
+`refresh-knowledge.sh` re-crawls the site + feeds recorded in the seeded
+`site_index.json` (via `scripts/refresh_site.sh`), rebuilds the digest
+(fail-loud — previous `knowledge.md` survives any failure), and when the
+digest actually changed stamps `knowledge-version.json`
+(`<UTCstamp>-<sha12>`, read by the engine and recorded on every ingested
+turn in Neon) and archives the digest to `knowledge-versions/` (last 14
+kept). The engine mtime-caches both files — no restart needed.
+
+Install (once, as root):
+
+```bash
+cd /opt/mission-control/engine/deploy/spacechannel
+chmod +x refresh-knowledge.sh
+cp mc-knowledge-refresh.service mc-knowledge-refresh.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now mc-knowledge-refresh.timer
+
+systemctl start mc-knowledge-refresh.service   # run one refresh now
+journalctl -u mc-knowledge-refresh.service -n 30   # verify
+systemctl list-timers mc-knowledge-refresh.timer
+```
+
+Cadence: 12:00 / 14:45 / 21:00 UTC — shortly after the site's own data
+prebuild (04:30 / 07:00 / 13:15 Pacific), ±5 min jitter.
+
 ## Notes / known limitations (dev)
 
 - Single host, in-process session state: deploys interrupt active conversations
   (Neon keeps completed history; the client reconnects).
 - Kokoro/LuxTTS not deployed — Piper voices only (CPU-fast). Voice arrives in
   milestone 3c with STUN enabled.
-- Knowledge refresh timer: see refresh-knowledge.sh + systemd units (3d).
+- Knowledge freshness depends on mc-knowledge-refresh.timer (above); if the
+  digest goes stale check `journalctl -u mc-knowledge-refresh.service`.

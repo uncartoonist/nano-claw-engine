@@ -1,0 +1,15 @@
+# [sc] Knowledge refresh cadence. The site's own data prebuild runs at
+# 04:30 / 07:00 / 13:15 Pacific (11:30 / 14:00 / 20:15 UTC); crawl shortly
+# after each so the digest tracks the freshest feeds without ever racing them.
+[Unit]
+Description=Timer: Mission Control knowledge refresh
+
+[Timer]
+OnCalendar=*-*-* 12:00:00 UTC
+OnCalendar=*-*-* 14:45:00 UTC
+OnCalendar=*-*-* 21:00:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
