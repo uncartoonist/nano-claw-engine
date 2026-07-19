@@ -64,7 +64,9 @@ if ! "$ENGINE/scripts/refresh_site.sh" "$SITE"; then
 fi
 
 # ── Version stamp + archive (only when the digest actually changed) ────────
-sha="$(sha256sum "$DIGEST" | cut -c1-12)"
+# The builder embeds a "Snapshot crawled <ts>" line that changes every run;
+# hash the content without it or every refresh would mint a new version.
+sha="$(grep -v '^Snapshot crawled ' "$DIGEST" | sha256sum | cut -c1-12)"
 prev_sha=""
 if [ -f "$VERSION_FILE" ]; then
   prev_sha="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('sha',''))" "$VERSION_FILE" 2>/dev/null || true)"
