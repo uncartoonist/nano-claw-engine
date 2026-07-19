@@ -24,7 +24,44 @@ KEEP_VERSIONS=14
 # no httpx — put the engine venv first so that fallback resolves inside it.
 export PATH="$ENGINE/.venv/bin:$PATH"
 
-"$ENGINE/scripts/refresh_site.sh" "$SITE"
+# Report a build to the gateway's signed knowledge-build ledger (Mission
+# Operations shows the last 10). Best-effort: a dead Lambda must never fail
+# the refresh itself. Args: status version checksum sizeChars
+report_build() {
+  python3 - "$@" <<'PY' || true
+import hashlib, hmac, json, sys, time, urllib.request
+status, version, checksum, size = sys.argv[1:5]
+env = {}
+for line in open("/opt/mission-control/.env"):
+    line = line.strip()
+    if line and not line.startswith("#") and "=" in line:
+        k, v = line.split("=", 1)
+        env[k] = v
+secret, url = env.get("MISSION_CONTROL_TOKEN_SECRET"), env.get("SPACECHANNEL_INGEST_URL")
+if not secret or not url:
+    sys.exit(0)
+body = json.dumps({
+    "version": version,
+    "checksum": checksum or None,
+    "status": status,
+    "sizeChars": int(size) if size.isdigit() else None,
+}).encode()
+ts = str(int(time.time()))
+sig = hmac.new(secret.encode(), f"mc-ingest.v1.{ts}.".encode() + body, hashlib.sha256).hexdigest()
+req = urllib.request.Request(url + "/knowledge-build", data=body, headers={
+    "Content-Type": "application/json", "x-mc-timestamp": ts, "x-mc-signature": sig})
+try:
+    urllib.request.urlopen(req, timeout=10)
+    print(f"  reported knowledge-build {status} ({version}) to gateway")
+except Exception as e:
+    print(f"  WARN: knowledge-build report failed: {e}", file=sys.stderr)
+PY
+}
+
+if ! "$ENGINE/scripts/refresh_site.sh" "$SITE"; then
+  report_build failed "$(date -u +%Y%m%dT%H%M%SZ)-failed" "" 0
+  exit 1
+fi
 
 # ── Version stamp + archive (only when the digest actually changed) ────────
 sha="$(sha256sum "$DIGEST" | cut -c1-12)"
@@ -34,7 +71,9 @@ if [ -f "$VERSION_FILE" ]; then
 fi
 
 if [ "$sha" = "$prev_sha" ]; then
-  echo "Digest unchanged (sha $sha) — version stays $(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$VERSION_FILE")"
+  version="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$VERSION_FILE")"
+  echo "Digest unchanged (sha $sha) — version stays $version"
+  report_build success "$version" "$sha" "$(wc -c < "$DIGEST" | tr -d ' ')"
   exit 0
 fi
 
@@ -57,3 +96,4 @@ ls -1 "$ARCHIVE_DIR" | sort | head -n -"$KEEP_VERSIONS" | while IFS= read -r old
 done
 
 echo "Knowledge version: $version ($chars chars, $(ls -1 "$ARCHIVE_DIR" | wc -l | tr -d ' ') archived)"
+report_build success "$version" "$sha" "$chars"
